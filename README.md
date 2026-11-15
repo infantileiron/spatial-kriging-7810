@@ -22,8 +22,9 @@
 4. 09:10 打开「北地块25点空间推断」，检查 `NZ-Q01` 至 `NZ-Q25`。查询坐标包括160米的外围位置，不隐瞒外推区域。
 5. 09:15 执行后台空间推断。Redis排队，Python worker分箱、拟合、求解并写入数据库；失败原因在运行页保留。
 6. 09:20 在「运行底稿」切换空间标准差，点选东北 `NZ-Q25`，查看64个权重、权重和、mu、条件数与锁定参数。
-7. 10:00 分析师提交复核，说明稀疏区和模型假设；主管在「地块归档」批准并生成不可变快照。
-8. 10:15 助理下载25行预测CSV，连同输入SHA256归档；实际误差仍需独立现场复测，本系统不补造LOO验证。
+7. 09:40 外业交回分区实测均值。分析师在「运行底稿」导入分区、待估点面积权重与实测均值，联合校正逐点预测，使各区面积加权均值对账一致，并使 Σ(改变量²/原空间方差) 最小。零方差点锁定原值，校正值保持0–100%。
+8. 10:00 分析师提交复核，说明稀疏区、模型假设与分区校正版本；主管在「地块归档」批准并生成不可变快照。
+9. 10:15 助理下载25行预测CSV（采用当前通过的校正版本，并附原推断与改变量），连同输入SHA256归档；实际误差仍需独立现场复测，本系统不补造LOO验证。
 
 ## 六个业务聚合
 
@@ -33,10 +34,30 @@
 |VariogramSpec|分箱、拟合边界、固定nugget和数值阈值|变异函数|
 |KrigingStudy|锁定采样批次、口径与待估坐标|待估研究|
 |KrigingRun|异步状态、输入快照、拟合、预测、权重和模型方差|运行底稿|
+|Calibration|分区均值联合校正的版本、目标值与失败诊断|运行底稿|
 |FieldReview|分析师说明与主管批准状态|地块归档|
 |Report|批准后的不可变结果快照与CSV|地块归档|
 
 「地块总览」汇集真实基线计算结果。另有登录和管理员审计页。两页共用空间图、变异函数图与指标组件。
+
+### 分区均值联合校正（实测分区均值对账）
+
+实测分区加权均值常与克里金逐点预测的加权平均不一致；直接按区平移会破坏重叠分区的一致性。本系统在「运行底稿」导入三样输入：
+
+- 分区权重CSV：`zone_id,query_id,area_weight[,measured_mean]`，同一待估点可属于多个分区，面积权重严格为正；
+- 实测均值CSV（可选）：`zone_id,measured_mean`，可覆盖或补充分区CSV中的均值列；
+- 提交说明。
+
+对每个分区按面积权重归一化，令校正后该区加权均值等于实测均值，即 `Σ wᵢyᵢ / Σwᵢ = b`。只调整逐点预测 y，不改变变异函数、克里金权重或空间方差；原推断 x 全量保留。目标函数为
+
+    min Σ (yᵢ − xᵢ)² / vᵢ    s.t. 各区加权均值=b，0 ≤ yᵢ ≤ 100
+
+即按原空间方差倒数加权的最小改动平方和。vᵢ=0 的点锁定在 xᵢ（不参与调整），其面积权重照常计入分区均值。求解为原-对偶活跃集二次规划，从LP可行点出发，结果必须同时满足：等式残差、0–100%边界、锁定点未改动、对偶间隙证书。任一项失败即拒绝替换。
+
+- 冗余（线性相关但一致）的分区约束自动接受，并提示约束秩。
+- 矛盾约束明确返回冲突分区：删除过滤法给出一个极小冲突子集，并列出各分区在锁定点与边界下的可达到均值区间。
+- 每次提交生成一条版本记录。全部校验通过才在同一事务内替换当前版本，旧的通过版本标为 superseded；校验或求解失败保留旧版本并记录失败原因，原推断不变。
+- 运行详情与页面显示逐点原值/校正值/改变量、各区校正前后差额、失败版本原因与冲突分区；导出CSV采用当前通过的校正版本，并附 `original_prediction_percent`、`calibration_change`、`calibration_version`。
 
 ## 算法与口径
 
@@ -75,7 +96,7 @@ docker compose exec backend python scripts/seed_demo.py
 - 后端：http://localhost:19231/docs；健康检查 `/health`
 - MySQL：localhost:17731；库/用户名 `spatial`，演示密码 `spatial_demo`
 
-演示账号 `admin@spatial.demo`、`analyst@spatial.demo`、`viewer@spatial.demo`，统一密码 `SoilDemo2026!`。首次启动 `SEED_DEMO=true` 自动创建演示数据；手工seed采用固定自然ID，仅补缺，不覆盖用户编辑。首次演示运行直接计算以便打开即可查看；新建运行必须经过Redis后台worker。
+演示账号 `admin@spatial.demo`、`analyst@spatial.demo`、`viewer@spatial.demo`，统一密码 `SoilDemo2026!`。首次启动 `SEED_DEMO=true` 自动创建演示数据；手工seed采用固定自然ID，仅补缺，不覆盖用户编辑。首次演示运行直接计算以便打开即可查看，并附带一个已通过的分区校正版本；新建运行必须经过Redis后台worker。
 
 ```sh
 docker compose ps
@@ -95,7 +116,7 @@ docker compose down -v --remove-orphans
 |数据库/队列|MySQL8.4（验收8.4.11）、Redis7.4列表队列与worker心跳|
 |容器|backend、worker、frontend/Nginx、db、redis，恰好五服务|
 
-`backend/src`按models、schemas、services、controllers、routes拆分；middleware处理全局错误与审计；`backend/scripts/seed_demo.py`负责幂等seed；`backend/migrations`记录建表方式。`frontend/src`按api、stores、pages、components、hooks、utils、constants、types、router拆分。计算与校验在后端，前端只展示、选择与提交。
+`backend/src`按models、schemas、services、controllers、routes拆分；分区校正算法在`services/calibration.py`，版本与原子替换在`services/calibration_service.py`；middleware处理全局错误与审计；`backend/scripts/seed_demo.py`负责幂等seed；`backend/migrations`记录建表方式。`frontend/src`按api、stores、pages、components、hooks、utils、constants、types、router拆分。计算与校验在后端，前端只展示、选择与提交。
 
 本地前端开发：`cd frontend && npm ci && npm run dev`。Vite代理 `/api` 到localhost:19231，后端可继续用Compose。后端本地开发先创建Python3.12虚拟环境、安装 `backend/requirements.txt`，设置 `DATABASE_URL`、`REDIS_URL`、`JWT_SECRET`，在backend目录运行 `uvicorn src.main:app --reload` 和单独 `python -m src.worker`；数据库/Redis可使用Compose服务。
 

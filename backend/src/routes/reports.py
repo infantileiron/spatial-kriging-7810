@@ -16,4 +16,4 @@ from fastapi.responses import Response
 from ..services.report_service import export
 @router.get("/{ident}/csv")
 def download(ident:str,db=Depends(get_db),user=Depends(current)):
- return Response(export(common.require(db,Report,ident)),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=soil-kriging-predictions.csv"})
+ return Response(export(db,common.require(db,Report,ident)),media_type="text/csv",headers={"Content-Disposition":"attachment; filename=soil-kriging-predictions.csv"})

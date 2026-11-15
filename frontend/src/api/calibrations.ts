@@ -1,0 +1,1 @@
+import {request} from "./client";export const fetchCalibrations=(runId:string)=>request("/runs/"+runId+"/calibrations");export const createCalibration=(runId:string,body:unknown)=>request("/runs/"+runId+"/calibrations","POST",body);

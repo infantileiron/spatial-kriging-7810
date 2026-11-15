@@ -2,9 +2,10 @@ import json
 import numpy as np
 from sqlalchemy import select,func
 from src.config.database import initialize,Session
-from src.models import SpatialDataset,SamplingPoint,VariogramSpec,KrigingStudy,QueryPoint,KrigingRun,FieldReview,Report,User
+from src.models import SpatialDataset,SamplingPoint,VariogramSpec,KrigingStudy,QueryPoint,KrigingRun,FieldReview,Report,Calibration,User
 from src.utils.security import hash_password
 from src.services.run_service import compute
+from src.services import calibration_service
 
 def make_points():
  coordinates=np.array([(float(x),float(y)) for x in [0,12,24,36,58,90,125,150] for y in [0,15,30,45,70,95,120,150]],dtype=np.float64)
@@ -12,6 +13,18 @@ def make_points():
  values=28+np.random.default_rng(20261112).multivariate_normal(np.zeros(64),C)
  return [{"point_id":f"NZ-S{i+1:02}","x":float(c[0]),"y":float(c[1]),"value":float(values[i])} for i,c in enumerate(coordinates)]
 def make_queries():return [{"query_id":f"NZ-Q{i+1:02}","x":float(x),"y":float(y)} for i,(x,y) in enumerate((x,y) for x in [10,45,80,115,160] for y in [10,45,80,115,160])]
+# 演示用分区：重叠分区（Z-N 与 Z-NW 共用 Q21/Q22）及非均匀面积权重。
+def demo_zones():
+ rows=[]
+ for w,q in [(3.0,1),(2.0,2),(1.0,6),(1.0,7)]:rows.append(("Z-SW",f"NZ-Q{q:02}",w,27.0))
+ for q in [15,20,24,25]:rows.append(("Z-E",f"NZ-Q{q:02}",1.0,33.5))
+ for q in [21,22,23]:rows.append(("Z-N",f"NZ-Q{q:02}",1.0,30.5))
+ for q in [16,21,22]:rows.append(("Z-NW",f"NZ-Q{q:02}",1.0,29.0))
+ zones={}
+ for zone_id,query_id,weight,mean in rows:
+  entry=zones.setdefault(zone_id,{"weights":{},"measured_mean":mean})
+  entry["weights"][query_id]=weight
+ return [{"zone_id":z,"measured_mean":e["measured_mean"],"weights":e["weights"],"area_weight_sum":float(sum(e["weights"].values()))} for z,e in sorted(zones.items())]
 
 def seed():
  initialize()
@@ -33,9 +46,14 @@ def seed():
    if not db.get(QueryPoint,ident):db.add(QueryPoint(id=ident,study_id="demo-study",**q))
   db.commit()
   if not db.get(KrigingRun,"demo-run"):db.add(KrigingRun(id="demo-run",study_id="demo-study",status="queued",result={},error=""));db.commit();compute(db,"demo-run")
+  if not db.scalar(select(Calibration).where(Calibration.run_id=="demo-run")):
+   run=db.get(KrigingRun,"demo-run")
+   if run and run.status=="completed":calibration_service.create(db,run,demo_zones(),"analyst@spatial.demo","demo-分区均值对账")
   if not db.get(FieldReview,"demo-review"):db.add(FieldReview(id="demo-review",run_id="demo-run",action="核对稀疏区与边缘查询的空间方差及变异函数边界；参数和预测锁定，空间随机场方差不当作真实误差。",state="approved",reviewer="admin@spatial.demo"))
   db.commit()
-  if not db.get(Report,"demo-report"):db.add(Report(id="demo-report",review_id="demo-review",title="宁泽地块含水空间推断底稿",snapshot={"result":db.get(KrigingRun,"demo-run").result,"action":db.get(FieldReview,"demo-review").action,"reviewer":"admin@spatial.demo"}))
+  if not db.get(Report,"demo-report"):
+   run=db.get(KrigingRun,"demo-run");applied=calibration_service.current_applied(db,run.id)
+   db.add(Report(id="demo-report",review_id="demo-review",title="宁泽地块含水空间推断底稿",snapshot={"result":run.result,"action":db.get(FieldReview,"demo-review").action,"reviewer":"admin@spatial.demo","run_id":run.id,"calibration_version":applied.version if applied else None,"calibration":applied.payload if applied else None}))
   db.commit()
-  return {cls.__tablename__:db.scalar(select(func.count()).select_from(cls)) for cls in [User,SpatialDataset,SamplingPoint,VariogramSpec,KrigingStudy,QueryPoint,KrigingRun,FieldReview,Report]}
+  return {cls.__tablename__:db.scalar(select(func.count()).select_from(cls)) for cls in [User,SpatialDataset,SamplingPoint,VariogramSpec,KrigingStudy,QueryPoint,KrigingRun,Calibration,FieldReview,Report]}
 if __name__=="__main__":print(json.dumps(seed(),ensure_ascii=False))

@@ -4,6 +4,7 @@ from .study import KrigingStudy
 from .run import KrigingRun
 from .review import FieldReview
 from .report import Report
+from .calibration import Calibration
 from .sampling_point import SamplingPoint
 from .query_point import QueryPoint
 from .prediction import Prediction
