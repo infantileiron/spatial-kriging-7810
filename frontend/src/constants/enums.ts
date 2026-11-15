@@ -1,0 +1,1 @@
+export const roles=["admin","analyst","viewer"] as const;export const runStatuses=["queued","running","completed","failed"] as const;export const modelModes=["fit","fixed"] as const;export const modeLabels:Record<string,string>={fit:"计数加权拟合",fixed:"外部固定模型"};export const coordinateSystem="local_meters";

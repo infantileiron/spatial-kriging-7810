@@ -1,0 +1,3 @@
+-- New MySQL schema created by SQLAlchemy metadata. Six core aggregates: datasets, specs, studies, runs, reviews, reports.
+-- Sampling/query/prediction/weight/bin/curve child tables persist all floating scientific values as DOUBLE. Integer counts remain INTEGER.
+-- JSON report snapshots mirror float64 results; no FLOAT/float32 fields. Existing databases need reviewed migrations.
